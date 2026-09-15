@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Guess the Tourist Attractions in Thailand</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts: Mitr -->
+    <link href="https://fonts.googleapis.com/css2?family=Mitr:wght@300;400;500;600&display=swap" rel="stylesheet">
+    <!-- MediaPipe Hands -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            font-family: 'Mitr', sans-serif;
+            margin: 0;
+            overflow: hidden;
+            background-color: #e0f2fe; /* Light blue background as fallback */
+            touch-action: none; /* Prevent scroll on touch */
+        }
+        
+        /* Mirror video */
+        #webcam {
+            transform: scaleX(-1);
+            object-fit: cover;
+            width: 100vw;
+            height: 100vh;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 1;
+        }
+
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 20; /* High z-index for cursor drawing */
+            pointer-events: none; /* Let clicks pass through to UI */
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 10;
+            pointer-events: none; /* Let elements inside be clickable individually */
+        }
+
+        .pointer-events-auto {
+            pointer-events: auto;
+        }
+
+        /* Glassmorphism Classes */
+        .glass {
+            background: rgba(255, 255, 255, 0.6);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.15);
+        }
+
+        .glass-dark {
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+        }
+
+        /* Card Styles */
+        .game-card {
+            position: absolute;
+            width: 160px;
+            height: 200px;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            user-select: none;
+            touch-action: none;
+            border-radius: 20px;
+            background: linear-gradient(135deg, rgba(255,255,255,0.9), rgba(255,255,255,0.7));
+            box-shadow: 0 10px 20px rgba(0,0,0,0.1), inset 0 2px 0 rgba(255,255,255,0.8);
+            border: 1px solid rgba(255,255,255,0.6);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 10px;
+            pointer-events: auto;
+        }
+
+        @media (max-width: 768px) {
+            .game-card {
+                width: 120px;
+                height: 150px;
+            }
+        }
+
+        .game-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 25px rgba(0,0,0,0.15), inset 0 2px 0 rgba(255,255,255,0.9);
+        }
+
+        .game-card.grabbing {
+            transform: scale(1.05) translateY(-10px);
+            box-shadow: 0 20px 30px rgba(0,0,0,0.2), inset 0 2px 0 rgba(255,255,255,1);
+            z-index: 50 !important;
+            transition: none; /* Smooth dragging */
+        }
+
+        /* Animations */
+        @keyframes pop {
+            0% { transform: scale(0.8); opacity: 0; }
+            100% { transform: scale(1); opacity: 1; }
+        }
+        .animate-pop {
+            animation: pop 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            25% { transform: translateX(-10px); }
+            50% { transform: translateX(10px); }
+            75% { transform: translateX(-10px); }
+        }
+        .animate-shake {
+            animation: shake 0.4s ease-in-out;
+        }
+
+        @keyframes celebrate {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.1); }
+            100% { transform: scale(1); }
+        }
+        .animate-celebrate {
+            animation: celebrate 0.5s ease-in-out;
+        }
+
+        /* Screens */
+        .screen {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            pointer-events: auto;
+            transition: opacity 0.3s;
+        }
+
+        .hidden-screen {
+            opacity: 0;
+            pointer-events: none;
+            display: none !important;
+        }
+    </style>
+</head>
+<body>
+
+    <!-- Camera Output -->
+    <video id="webcam" autoplay playsinline></video>
+    
+    <!-- Canvas for drawing AR Hands & Cursor -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- Main Game UI Layer -->
+    <div id="ui-layer" class="hidden-screen flex flex-col justify-between p-4 sm:p-8">
+        
+        <!-- Header: Score & Level -->
+        <div class="flex justify-between items-center w-full max-w-4xl mx-auto glass px-6 py-3 rounded-full pointer-events-auto">
+            <div class="flex items-center gap-3">
+                <span class="text-2xl font-bold text-blue-600">🇹🇭 EngAR</span>
+                <span class="text-gray-500 hidden sm:inline">| ทายสถานที่เที่ยว</span>
+            </div>
+            <div class="flex items-center gap-6">
+                <div class="text-center">
+                    <div class="text-xs text-gray-500 font-bold tracking-wider">LEVEL</div>
+                    <div class="text-xl font-bold text-gray-800"><span id="level-text">1</span> / 5</div>
+                </div>
+                <div class="text-center">
+                    <div class="text-xs text-gray-500 font-bold tracking-wider">SCORE</div>
+                    <div class="text-xl font-bold text-blue-600"><span id="score-text">0</span></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Progress Bar -->
+        <div class="w-full max-w-4xl mx-auto mt-4 h-3 bg-white/50 rounded-full overflow-hidden pointer-events-none">
+            <div id="progress-bar" class="h-full bg-blue-500 transition-all duration-500 w-1/5"></div>
+        </div>
+
+        <!-- Clue & Hint Box (Center) -->
+        <div class="flex-grow flex flex-col items-center justify-start mt-6 sm:mt-12 pointer-events-none">
+            <div class="glass px-8 py-6 rounded-3xl flex flex-col items-center max-w-md w-full animate-pop text-center">
+                <div id="clue-emoji" class="text-6xl sm:text-8xl mb-4 drop-shadow-md">🛕</div>
+                <h2 class="text-xl sm:text-2xl font-bold text-gray-800 mb-2">สถานที่นี้คืออะไร?</h2>
+                <div class="bg-blue-100/80 text-blue-800 px-4 py-2 rounded-xl text-sm sm:text-base">
+                    💡 <span id="hint-text">วัดสำคัญริมแม่น้ำเจ้าพระยา</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Cards Container (JS will inject cards here) -->
+        <div id="cards-container" class="absolute top-0 left-0 w-full h-full pointer-events-none"></div>
+
+        <!-- Answer Drop Zone -->
+        <div class="w-full pb-8 flex justify-center pointer-events-none">
+            <div id="drop-zone" class="glass-dark px-10 py-6 sm:py-8 rounded-3xl border-2 border-dashed border-white/50 w-full max-w-lg flex flex-col items-center justify-center pointer-events-auto transition-colors">
+                <div class="text-white/80 font-medium mb-2 text-lg">คำตอบของคุณ</div>
+                <div class="text-white/40 text-sm">[ ลากการ์ดมาวางที่นี่ ]</div>
+            </div>
+        </div>
+        
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="screen bg-gradient-to-br from-blue-100 to-blue-300">
+        <div class="glass p-10 rounded-3xl flex flex-col items-center text-center max-w-md animate-pop">
+            <div class="text-6xl mb-4">🇹🇭</div>
+            <h1 class="text-4xl font-bold text-blue-600 mb-2">EngAR</h1>
+            <h2 class="text-xl font-medium text-gray-700 mb-6">เกมทายสถานที่เที่ยวในประเทศไทย</h2>
+            <p class="text-gray-500 mb-8">ใช้มือของคุณหรือเมาส์ หยิบการ์ดชื่อสถานที่ที่ถูกต้องไปวางในช่องคำตอบ</p>
+            <button id="btn-start" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-8 rounded-full text-lg shadow-lg transition-transform hover:scale-105 pointer-events-auto">
+                เข้าสู่เกม
+            </button>
+        </div>
+    </div>
+
+    <!-- Tutorial Screen -->
+    <div id="tutorial-screen" class="screen bg-black/40 backdrop-blur-sm hidden-screen">
+        <div class="glass p-8 sm:p-10 rounded-3xl flex flex-col items-center text-center max-w-lg w-11/12 animate-pop">
+            <h2 class="text-3xl font-bold text-blue-600 mb-6">วิธีเล่น</h2>
+            
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8 text-left w-full">
+                <div class="bg-white/50 p-4 rounded-xl">
+                    <div class="text-2xl mb-1">☝️ ชี้</div>
+                    <div class="text-sm text-gray-700">ใช้นิ้วชี้เพื่อควบคุมเป้า (Cursor) บนหน้าจอ</div>
+                </div>
+                <div class="bg-white/50 p-4 rounded-xl">
+                    <div class="text-2xl mb-1">🤏 จีบ</div>
+                    <div class="text-sm text-gray-700">จีบนิ้วโป้งและนิ้วชี้เข้าหากัน เพื่อหยิบการ์ด</div>
+                </div>
+                <div class="bg-white/50 p-4 rounded-xl">
+                    <div class="text-2xl mb-1">✋ ปล่อย</div>
+                    <div class="text-sm text-gray-700">กางนิ้วออก เพื่อวางการ์ดลงในช่องคำตอบ</div>
+                </div>
+                <div class="bg-white/50 p-4 rounded-xl">
+                    <div class="text-2xl mb-1">🎯 จับคู่</div>
+                    <div class="text-sm text-gray-700">เลือกชื่อสถานที่ให้ตรงกับภาพและคำใบ้</div>
+                </div>
+            </div>
+            
+            <p class="text-xs text-gray-500 mb-6">* หากไม่สะดวกใช้กล้อง สามารถใช้ เมาส์ หรือ นิ้วสัมผัส แทนได้ *</p>
+
+            <button id="btn-play" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-10 rounded-full text-xl shadow-lg transition-transform hover:scale-105 pointer-events-auto">
+                เริ่มเกม!
+            </button>
+        </div>
+    </div>
+
+    <!-- End Screen -->
+    <div id="end-screen" class="screen bg-gradient-to-br from-green-100 to-green-300 hidden-screen">
+        <div class="glass p-10 rounded-3xl flex flex-col items-center text-center max-w-md animate-pop">
+            <div class="text-6xl mb-4">🎉</div>
+            <h1 class="text-4xl font-bold text-green-600 mb-2">ALL CLEAR!</h1>
+            <h2 class="text-xl font-medium text-gray-700 mb-6">คุณผ่านทุกด่านแล้ว!</h2>
+            
+            <div class="bg-white/60 rounded-2xl p-6 mb-6 w-full">
+                <div class="text-sm text-gray-500 font-bold mb-1">คะแนนรวม</div>
+                <div class="text-5xl font-bold text-blue-600"><span id="final-score">500</span> <span class="text-2xl text-gray-400">/ 500</span></div>
+            </div>
+
+            <p class="text-gray-600 mb-8 font-medium">🇹🇭 เก่งมาก! คุณรู้จักสถานที่ท่องเที่ยวในประเทศไทยเป็นอย่างดี</p>
+            
+            <div class="flex gap-4 w-full">
+                <button id="btn-restart" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-bold py-3 px-4 rounded-full shadow-lg transition-transform hover:scale-105 pointer-events-auto">
+                    เล่นอีกครั้ง
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Status Message (Top Center) -->
+    <div id="status-message" class="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 glass px-6 py-2 rounded-full font-medium text-sm transition-opacity duration-300 opacity-0 pointer-events-none">
+        <!-- Messages will appear here -->
+    </div>
+
+    <script>
+        // --- Data ---
+        const levels = [
+            {
+                level: 1,
+                place: "วัดอรุณราชวราราม",
+                clue: "🛕",
+                hint: "วัดชื่อดังริมแม่น้ำเจ้าพระยาในกรุงเทพฯ",
+                choices: ["วัดอรุณราชวราราม", "ดอยสุเทพ", "เกาะพีพี", "พระบรมมหาราชวัง"]
+            },
+            {
+                level: 2,
+                place: "เกาะพีพี",
+                clue: "🏝️",
+                hint: "หมู่เกาะชื่อดังในจังหวัดกระบี่",
+                choices: ["เกาะพีพี", "ดอยอินทนนท์", "วัดพระแก้ว", "ตลาดน้ำดำเนินสะดวก"]
+            },
+            {
+                level: 3,
+                place: "ดอยสุเทพ",
+                clue: "⛰️",
+                hint: "ภูเขาและวัดชื่อดังในจังหวัดเชียงใหม่",
+                choices: ["ดอยสุเทพ", "อ่าวมาหยา", "วัดอรุณราชวราราม", "พระบรมมหาราชวัง"]
+            },
+            {
+                level: 4,
+                place: "พระบรมมหาราชวัง",
+                clue: "👑",
+                hint: "สถานที่สำคัญทางประวัติศาสตร์ใจกลางกรุงเทพฯ",
+                choices: ["พระบรมมหาราชวัง", "เกาะพีพี", "ดอยอินทนนท์", "อ่าวมาหยา"]
+            },
+            {
+                level: 5,
+                place: "อ่าวมาหยา",
+                clue: "🌊",
+                hint: "อ่าวชื่อดังที่มีชายหาดสวยและน้ำทะเลใสในจังหวัดกระบี่",
+                choices: ["อ่าวมาหยา", "ดอยสุเทพ", "วัดพระแก้ว", "ตลาดน้ำดำเนินสะดวก"]
+            }
+        ];
+
+        // --- State ---
+        const state = {
+            currentLevel: 0,
+            score: 0,
+            isPlaying: false,
+            cameraEnabled: false,
+            
+            // Hand Tracking / Cursor
+            handResults: null,
+            cursor: { x: window.innerWidth / 2, y: window.innerHeight / 2 },
+            isPinching: false,
+            
+            // Cards & Interaction
+            cards: [],
+            grabbedCard: null,
+            grabOffsetX: 0,
+            grabOffsetY: 0,
+            
+            // Interaction mode (ar, mouse, touch)
+            inputType: 'mouse' // default
+        };
+
+        // --- DOM Elements ---
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('game-canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        
+        const uiLayer = document.getElementById('ui-layer');
+        const screens = {
+            start: document.getElementById('start-screen'),
+            tutorial: document.getElementById('tutorial-screen'),
+            end: document.getElementById('end-screen')
+        };
+        
+        const uiElements = {
+            level: document.getElementById('level-text'),
+            score: document.getElementById('score-text'),
+            progressBar: document.getElementById('progress-bar'),
+            clue: document.getElementById('clue-emoji'),
+            hint: document.getElementById('hint-text'),
+            dropZone: document.getElementById('drop-zone'),
+            cardsContainer: document.getElementById('cards-container'),
+            statusMsg: document.getElementById('status-message'),
+            finalScore: document.getElementById('final-score')
+        };
+
+        // Resize Canvas
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- Helper Functions ---
+        function showScreen(screenName) {
+            Object.values(screens).forEach(s => s.classList.add('hidden-screen'));
+            if (screenName === 'ui') {
+                uiLayer.classList.remove('hidden-screen');
+            } else if (screens[screenName]) {
+                uiLayer.classList.add('hidden-screen');
+                screens[screenName].classList.remove('hidden-screen');
+            }
+        }
+
+        function showStatus(msg, type = 'info') {
+            const el = uiElements.statusMsg;
+            el.innerHTML = msg;
+            el.className = `fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-6 py-2 rounded-full font-medium text-sm transition-opacity duration-300 pointer-events-none shadow-lg ${
+                type === 'success' ? 'bg-green-100 text-green-800 border border-green-300' :
+                type === 'error' ? 'bg-red-100 text-red-800 border border-red-300' :
+                'bg-white/80 text-gray-800 border border-white'
+            }`;
+            el.style.opacity = '1';
+            setTimeout(() => { el.style.opacity = '0'; }, 3000);
+        }
+
+        // --- MediaPipe Setup ---
+        const hands = new Hands({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults((results) => {
+            state.handResults = results;
+        });
+
+        async function initCamera() {
+            try {
+                // Check if device has media devices (Camera)
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error("getUserMedia is not supported");
+                }
+                
+                // Try to request camera access
+                const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+                videoElement.srcObject = stream;
+                
+                const camera = new Camera(videoElement, {
+                    onFrame: async () => {
+                        if (state.isPlaying) {
+                            await hands.send({image: videoElement});
+                        }
+                    },
+                    width: 640,
+                    height: 480
+                });
+                
+                await camera.start();
+                state.cameraEnabled = true;
+                console.log("Camera started successfully");
+                
+            } catch (error) {
+                console.warn("Camera could not be started. Switching to fallback mode.", error);
+                state.cameraEnabled = false;
+                videoElement.style.display = 'none'; // Hide video element
+            }
+        }
+
+        // --- Game Logic ---
+        const ui = {
+            updateHeader: () => {
+                uiElements.level.innerText = state.currentLevel + 1;
+                uiElements.score.innerText = state.score;
+                uiElements.progressBar.style.width = `${((state.currentLevel) / levels.length) * 100}%`;
+            },
+            
+            loadLevel: () => {
+                const data = levels[state.currentLevel];
+                uiElements.clue.innerText = data.clue;
+                uiElements.hint.innerText = data.hint;
+                uiElements.dropZone.className = "glass-dark px-10 py-6 sm:py-8 rounded-3xl border-2 border-dashed border-white/50 w-full max-w-lg flex flex-col items-center justify-center pointer-events-auto transition-colors";
+                
+                // Clear old cards
+                uiElements.cardsContainer.innerHTML = '';
+                state.cards = [];
+                
+                // Shuffle choices
+                const choices = [...data.choices].sort(() => Math.random() - 0.5);
+                
+                // Calculate grid positions for sides (Left & Right)
+                const isMobile = window.innerWidth < 768;
+                const cw = isMobile ? 120 : 180;
+                const ch = isMobile ? 150 : 220;
+                const marginX = isMobile ? 15 : Math.max(40, window.innerWidth * 0.08); 
+                const leftX = marginX;
+                const rightX = window.innerWidth - cw - marginX;
+                
+                // Start Y relative to screen height
+                const startY = window.innerHeight * (isMobile ? 0.35 : 0.25); 
+                const gapY = isMobile ? 15 : 30;
+
+                const positions = [
+                    { x: leftX, y: startY },
+                    { x: rightX, y: startY },
+                    { x: leftX, y: startY + ch + gapY },
+                    { x: rightX, y: startY + ch + gapY }
+                ];
+
+                choices.forEach((choice, index) => {
+                    const cardEl = document.createElement('div');
+                    cardEl.className = 'game-card animate-pop';
+                    
+                    // Emoji mapping for card decoration based on name (Simple mapping)
+                    let cardEmoji = "📍";
+                    if(choice.includes("วัด")) cardEmoji = "🛕";
+                    if(choice.includes("เกาะ") || choice.includes("อ่าว")) cardEmoji = "🏝️";
+                    if(choice.includes("ดอย")) cardEmoji = "⛰️";
+                    if(choice.includes("วัง")) cardEmoji = "👑";
+
+                    cardEl.innerHTML = `
+                        <div class="text-3xl sm:text-5xl mb-2 sm:mb-4 drop-shadow-md">${cardEmoji}</div>
+                        <div class="font-bold text-sm sm:text-lg text-gray-800 leading-tight">${choice}</div>
+                    `;
+                    
+                    const pos = positions[index];
+                    cardEl.style.left = `${pos.x}px`;
+                    cardEl.style.top = `${pos.y}px`;
+                    cardEl.dataset.name = choice;
+                    cardEl.dataset.originalX = pos.x;
+                    cardEl.dataset.originalY = pos.y;
+                    
+                    // Mouse / Touch Fallback Events
+                    cardEl.addEventListener('mousedown', (e) => handleGrabStart(e, cardEl, 'mouse'));
+                    cardEl.addEventListener('touchstart', (e) => handleGrabStart(e, cardEl, 'touch'), {passive: false});
+
+                    uiElements.cardsContainer.appendChild(cardEl);
+                    
+                    state.cards.push({
+                        element: cardEl,
+                        name: choice,
+                        x: pos.x,
+                        y: pos.y,
+                        w: cw,
+                        h: ch
+                    });
+                });
+            }
+        };
+
+        function checkIntersection(rect1, rect2) {
+            return (
+                rect1.x < rect2.x + rect2.width &&
+                rect1.x + rect1.width > rect2.x &&
+                rect1.y < rect2.y + rect2.height &&
+                rect1.y + rect1.height > rect2.y
+            );
+        }
+
+        function checkAnswer(cardEl) {
+            const currentData = levels[state.currentLevel];
+            const dropRect = uiElements.dropZone.getBoundingClientRect();
+            const cardRect = cardEl.getBoundingClientRect();
+            
+            // Check if card is dropped inside dropZone
+            if (checkIntersection(cardRect, dropRect)) {
+                if (cardEl.dataset.name === currentData.place) {
+                    // Correct!
+                    showStatus('🎉 ถูกต้อง! +100 คะแนน', 'success');
+                    state.score += 100;
+                    uiElements.dropZone.classList.add('border-green-400', 'bg-green-500/20');
+                    uiElements.dropZone.classList.add('animate-celebrate');
+                    cardEl.style.left = `${dropRect.left + (dropRect.width/2) - (cardRect.width/2)}px`;
+                    cardEl.style.top = `${dropRect.top + (dropRect.height/2) - (cardRect.height/2)}px`;
+                    
+                    setTimeout(() => {
+                        state.currentLevel++;
+                        if (state.currentLevel < levels.length) {
+                            ui.updateHeader();
+                            ui.loadLevel();
+                        } else {
+                            endGame();
+                        }
+                    }, 1500);
+                } else {
+                    // Wrong
+                    showStatus('❌ ยังไม่ถูก ลองใหม่อีกครั้ง', 'error');
+                    uiElements.dropZone.classList.add('border-red-400', 'bg-red-500/20');
+                    uiElements.dropZone.classList.remove('border-white/50');
+                    cardEl.classList.add('animate-shake');
+                    
+                    setTimeout(() => {
+                        uiElements.dropZone.classList.remove('border-red-400', 'bg-red-500/20');
+                        uiElements.dropZone.classList.add('border-white/50');
+                        cardEl.classList.remove('animate-shake');
+                        // Return to original pos
+                        cardEl.style.left = `${cardEl.dataset.originalX}px`;
+                        cardEl.style.top = `${cardEl.dataset.originalY}px`;
+                    }, 800);
+                }
+            } else {
+                // Not dropped in zone, return to original
+                cardEl.style.left = `${cardEl.dataset.originalX}px`;
+                cardEl.style.top = `${cardEl.dataset.originalY}px`;
+            }
+        }
+
+        // --- Grab Handlers (Mouse & Touch) ---
+        function handleGrabStart(e, cardEl, type) {
+            if (state.inputType === 'ar') return; // Ignore if using AR
+            state.inputType = type;
+            
+            const clientX = type === 'mouse' ? e.clientX : e.touches[0].clientX;
+            const clientY = type === 'mouse' ? e.clientY : e.touches[0].clientY;
+            
+            const rect = cardEl.getBoundingClientRect();
+            state.grabbedCard = cardEl;
+            state.grabOffsetX = clientX - rect.left;
+            state.grabOffsetY = clientY - rect.top;
+            
+            cardEl.classList.add('grabbing');
+            if(type === 'touch') e.preventDefault();
+        }
+
+        function handleGrabMove(e) {
+            if (!state.grabbedCard || state.inputType === 'ar') return;
+            
+            const clientX = state.inputType === 'mouse' ? e.clientX : e.touches[0].clientX;
+            const clientY = state.inputType === 'mouse' ? e.clientY : e.touches[0].clientY;
+            
+            state.grabbedCard.style.left = `${clientX - state.grabOffsetX}px`;
+            state.grabbedCard.style.top = `${clientY - state.grabOffsetY}px`;
+            
+            // Hover effect for dropzone
+            const dropRect = uiElements.dropZone.getBoundingClientRect();
+            const cardRect = state.grabbedCard.getBoundingClientRect();
+            if (checkIntersection(cardRect, dropRect)) {
+                uiElements.dropZone.classList.add('bg-white/20');
+            } else {
+                uiElements.dropZone.classList.remove('bg-white/20');
+            }
+            
+            if(state.inputType === 'touch') e.preventDefault();
+        }
+
+        function handleGrabEnd(e) {
+            if (!state.grabbedCard || state.inputType === 'ar') return;
+            
+            const card = state.grabbedCard;
+            card.classList.remove('grabbing');
+            state.grabbedCard = null;
+            uiElements.dropZone.classList.remove('bg-white/20');
+            
+            checkAnswer(card);
+        }
+
+        window.addEventListener('mousemove', handleGrabMove);
+        window.addEventListener('mouseup', handleGrabEnd);
+        window.addEventListener('touchmove', handleGrabMove, {passive: false});
+        window.addEventListener('touchend', handleGrabEnd);
+
+        // --- Draw Loop & AR Logic ---
+        function drawLoop() {
+            requestAnimationFrame(drawLoop);
+
+            // Clear canvas
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            if (!state.isPlaying) return;
+
+            let handFound = false;
+            let cursorColor = 'rgba(59, 130, 246, 0.8)'; // blue
+            let cursorBorder = 'rgba(255,255,255,0.8)';
+            let cursorRadius = 15;
+            let isHoveringCard = false;
+
+            // Process AR Hand if available
+            if (state.cameraEnabled && state.handResults && state.handResults.multiHandLandmarks && state.handResults.multiHandLandmarks.length > 0) {
+                handFound = true;
+                state.inputType = 'ar';
+                
+                const landmarks = state.handResults.multiHandLandmarks[0];
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                
+                // Map coordinates (Note: webcam is mirrored via CSS, so we invert X for logical match)
+                const mappedX = (1 - indexTip.x) * canvasElement.width;
+                const mappedY = indexTip.y * canvasElement.height;
+                
+                // Smooth cursor
+                state.cursor.x += (mappedX - state.cursor.x) * 0.3;
+                state.cursor.y += (mappedY - state.cursor.y) * 0.3;
+                
+                // Pinch detection (Pythagorean)
+                const mThumbX = (1 - thumbTip.x) * canvasElement.width;
+                const mThumbY = thumbTip.y * canvasElement.height;
+                const dx = state.cursor.x - mThumbX;
+                const dy = state.cursor.y - mThumbY;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                
+                const pinchThreshold = 40;
+                const isCurrentlyPinching = distance < pinchThreshold;
+                
+                // Check Hover
+                const hoveredCard = state.cards.find(c => {
+                    const rect = c.element.getBoundingClientRect();
+                    return state.cursor.x > rect.left && state.cursor.x < rect.right &&
+                           state.cursor.y > rect.top && state.cursor.y < rect.bottom;
+                });
+
+                if (hoveredCard || state.grabbedCard) {
+                    isHoveringCard = true;
+                }
+
+                // Pinch State Machine
+                if (isCurrentlyPinching && !state.isPinching) {
+                    // Just Pinched
+                    state.isPinching = true;
+                    if (hoveredCard) {
+                        // Grab!
+                        state.grabbedCard = hoveredCard.element;
+                        const rect = state.grabbedCard.getBoundingClientRect();
+                        state.grabOffsetX = state.cursor.x - rect.left;
+                        state.grabOffsetY = state.cursor.y - rect.top;
+                        state.grabbedCard.classList.add('grabbing');
+                    }
+                } else if (!isCurrentlyPinching && state.isPinching) {
+                    // Just Released
+                    state.isPinching = false;
+                    if (state.grabbedCard) {
+                        const card = state.grabbedCard;
+                        card.classList.remove('grabbing');
+                        state.grabbedCard = null;
+                        uiElements.dropZone.classList.remove('bg-white/20');
+                        checkAnswer(card);
+                    }
+                }
+
+                // AR Dragging logic
+                if (state.grabbedCard) {
+                    state.grabbedCard.style.left = `${state.cursor.x - state.grabOffsetX}px`;
+                    state.grabbedCard.style.top = `${state.cursor.y - state.grabOffsetY}px`;
+                    
+                    // Hover effect
+                    const dropRect = uiElements.dropZone.getBoundingClientRect();
+                    const cardRect = state.grabbedCard.getBoundingClientRect();
+                    if (checkIntersection(cardRect, dropRect)) {
+                        uiElements.dropZone.classList.add('bg-white/20');
+                    } else {
+                        uiElements.dropZone.classList.remove('bg-white/20');
+                    }
+                }
+
+                // Cursor Styling based on state
+                if (state.grabbedCard) {
+                    cursorColor = 'rgba(34, 197, 94, 0.8)'; // green
+                    cursorRadius = 12;
+                } else if (state.isPinching && !hoveredCard) {
+                    cursorColor = 'rgba(239, 68, 68, 0.8)'; // red (missed pinch)
+                    cursorRadius = 10;
+                } else if (isHoveringCard) {
+                    cursorColor = 'transparent';
+                    cursorBorder = 'rgba(234, 179, 8, 1)'; // yellow hover
+                    cursorRadius = 20;
+                    canvasCtx.setLineDash([5, 5]);
+                }
+            } else {
+                // Reset pinch if hand lost
+                if(state.grabbedCard && state.inputType === 'ar') {
+                    state.grabbedCard.classList.remove('grabbing');
+                    state.grabbedCard.style.left = `${state.grabbedCard.dataset.originalX}px`;
+                    state.grabbedCard.style.top = `${state.grabbedCard.dataset.originalY}px`;
+                    state.grabbedCard = null;
+                    state.isPinching = false;
+                }
+            }
+
+            // Draw Cursor (Only if AR is active or was recently active)
+            if (state.cameraEnabled && state.inputType === 'ar') {
+                canvasCtx.beginPath();
+                canvasCtx.arc(state.cursor.x, state.cursor.y, cursorRadius, 0, 2 * Math.PI);
+                canvasCtx.fillStyle = cursorColor;
+                canvasCtx.fill();
+                canvasCtx.lineWidth = 3;
+                canvasCtx.strokeStyle = cursorBorder;
+                canvasCtx.stroke();
+                canvasCtx.setLineDash([]); // Reset
+                
+                if (!handFound) {
+                    // Draw finding hand text
+                    canvasCtx.font = "20px Mitr";
+                    canvasCtx.fillStyle = "white";
+                    canvasCtx.textAlign = "center";
+                    // Shadow for text
+                    canvasCtx.shadowColor = "rgba(0,0,0,0.5)";
+                    canvasCtx.shadowBlur = 4;
+                    canvasCtx.fillText("✋ กำลังหามือของคุณ...", canvasElement.width/2, 50);
+                    canvasCtx.shadowBlur = 0; // reset
+                }
+            }
+        }
+
+        // --- Game Flow Controls ---
+        function startGame() {
+            state.currentLevel = 0;
+            state.score = 0;
+            state.isPlaying = true;
+            ui.updateHeader();
+            ui.loadLevel();
+            showScreen('ui');
+        }
+
+        function endGame() {
+            state.isPlaying = false;
+            uiElements.finalScore.innerText = state.score;
+            uiElements.progressBar.style.width = "100%";
+            showScreen('end');
+        }
+
+        // --- Event Listeners ---
+        document.getElementById('btn-start').addEventListener('click', () => {
+            showScreen('tutorial');
+            // Try to initialize camera in background while reading tutorial
+            initCamera();
+        });
+
+        document.getElementById('btn-play').addEventListener('click', () => {
+            startGame();
+        });
+
+        document.getElementById('btn-restart').addEventListener('click', () => {
+            showScreen('start');
+        });
+
+        // Start Loop
+        drawLoop();
+
+    </script>
+</body>
+</html>
