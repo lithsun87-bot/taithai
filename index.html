@@ -82,7 +82,7 @@
             width: 160px;
             height: 200px;
             cursor: pointer;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: transform 0.2s, box-shadow 0.2s, left 0.3s ease, top 0.3s ease;
             user-select: none;
             touch-action: none;
             border-radius: 20px;
@@ -355,6 +355,10 @@
             grabbedCard: null,
             grabOffsetX: 0,
             grabOffsetY: 0,
+            activePointerId: null, // ensures only ONE finger/pointer drives a drag
+            pendingX: 0,
+            pendingY: 0,
+            dragRafId: null,
             
             // Interaction mode (ar, mouse, touch)
             inputType: 'mouse' // default
@@ -528,9 +532,8 @@
                     cardEl.dataset.originalX = pos.x;
                     cardEl.dataset.originalY = pos.y;
                     
-                    // Mouse / Touch Fallback Events
-                    cardEl.addEventListener('mousedown', (e) => handleGrabStart(e, cardEl, 'mouse'));
-                    cardEl.addEventListener('touchstart', (e) => handleGrabStart(e, cardEl, 'touch'), {passive: false});
+                    // Pointer Events: unifies mouse & touch, and naturally ignores extra fingers
+                    cardEl.addEventListener('pointerdown', (e) => handleGrabStart(e, cardEl));
 
                     uiElements.cardsContainer.appendChild(cardEl);
                     
@@ -603,32 +606,36 @@
             }
         }
 
-        // --- Grab Handlers (Mouse & Touch) ---
-        function handleGrabStart(e, cardEl, type) {
+        // --- Grab Handlers (Pointer Events: mouse, touch & pen, locked to ONE pointer) ---
+        function handleGrabStart(e, cardEl) {
             if (state.inputType === 'ar') return; // Ignore if using AR
-            state.inputType = type;
-            
-            const clientX = type === 'mouse' ? e.clientX : e.touches[0].clientX;
-            const clientY = type === 'mouse' ? e.clientY : e.touches[0].clientY;
-            
+            if (state.grabbedCard) return; // Already dragging - ignore any other finger that touches down
+
+            state.inputType = e.pointerType === 'mouse' ? 'mouse' : 'touch';
+            state.activePointerId = e.pointerId;
+
             const rect = cardEl.getBoundingClientRect();
             state.grabbedCard = cardEl;
-            state.grabOffsetX = clientX - rect.left;
-            state.grabOffsetY = clientY - rect.top;
-            
+            state.grabOffsetX = e.clientX - rect.left;
+            state.grabOffsetY = e.clientY - rect.top;
+            state.pendingX = e.clientX;
+            state.pendingY = e.clientY;
+
             cardEl.classList.add('grabbing');
-            if(type === 'touch') e.preventDefault();
+            // Lock all subsequent events for this finger/pointer to this element
+            cardEl.setPointerCapture(e.pointerId);
+            e.preventDefault();
         }
 
-        function handleGrabMove(e) {
-            if (!state.grabbedCard || state.inputType === 'ar') return;
-            
-            const clientX = state.inputType === 'mouse' ? e.clientX : e.touches[0].clientX;
-            const clientY = state.inputType === 'mouse' ? e.clientY : e.touches[0].clientY;
-            
-            state.grabbedCard.style.left = `${clientX - state.grabOffsetX}px`;
-            state.grabbedCard.style.top = `${clientY - state.grabOffsetY}px`;
-            
+        // Applies the latest pointer position at most once per animation frame,
+        // instead of on every single move event - this is what removes the jank/lag.
+        function applyDragFrame() {
+            state.dragRafId = null;
+            if (!state.grabbedCard) return;
+
+            state.grabbedCard.style.left = `${state.pendingX - state.grabOffsetX}px`;
+            state.grabbedCard.style.top = `${state.pendingY - state.grabOffsetY}px`;
+
             // Hover effect for dropzone
             const dropRect = uiElements.dropZone.getBoundingClientRect();
             const cardRect = state.grabbedCard.getBoundingClientRect();
@@ -637,25 +644,42 @@
             } else {
                 uiElements.dropZone.classList.remove('bg-white/20');
             }
-            
-            if(state.inputType === 'touch') e.preventDefault();
+        }
+
+        function handleGrabMove(e) {
+            if (!state.grabbedCard || state.inputType === 'ar') return;
+            if (e.pointerId !== state.activePointerId) return; // Ignore any other finger
+
+            state.pendingX = e.clientX;
+            state.pendingY = e.clientY;
+
+            if (state.dragRafId === null) {
+                state.dragRafId = requestAnimationFrame(applyDragFrame);
+            }
+            e.preventDefault();
         }
 
         function handleGrabEnd(e) {
             if (!state.grabbedCard || state.inputType === 'ar') return;
-            
+            if (e.pointerId !== state.activePointerId) return;
+
+            if (state.dragRafId !== null) {
+                cancelAnimationFrame(state.dragRafId);
+                state.dragRafId = null;
+            }
+
             const card = state.grabbedCard;
             card.classList.remove('grabbing');
             state.grabbedCard = null;
+            state.activePointerId = null;
             uiElements.dropZone.classList.remove('bg-white/20');
-            
+
             checkAnswer(card);
         }
 
-        window.addEventListener('mousemove', handleGrabMove);
-        window.addEventListener('mouseup', handleGrabEnd);
-        window.addEventListener('touchmove', handleGrabMove, {passive: false});
-        window.addEventListener('touchend', handleGrabEnd);
+        window.addEventListener('pointermove', handleGrabMove, {passive: false});
+        window.addEventListener('pointerup', handleGrabEnd);
+        window.addEventListener('pointercancel', handleGrabEnd);
 
         // --- Draw Loop & AR Logic ---
         function drawLoop() {
